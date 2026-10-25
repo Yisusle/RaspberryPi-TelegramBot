@@ -1,0 +1,9 @@
+services:
+  pi-telegram-monitor:
+    build: .
+    container_name: pi-telegram-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Acceso de solo lectura al host para mostrar métricas básicas de la Pi:
+    # el bot informa recursos visibles dentro del contenedor, no métricas perfectas del host.
