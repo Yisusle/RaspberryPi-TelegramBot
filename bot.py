@@ -207,8 +207,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Disco raíz: {disk.percent:.0f}% usado "
         f"({disk.free / 1024**3:.1f} GiB libres)\n\n"
         f"Canal 1: {'configurado' if LINK_1 else 'sin configurar'}\n"
-        f"Canal 2: {'configurado' if LINK_2 else 'sin configurar'}\n"
-        f"Controlador: {BROWSER_CONTROL_URL}"
+        f"Canal 2: {'configurado' if LINK_2 else 'sin configurar'}"
     )
 
 
@@ -237,7 +236,6 @@ async def close_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     log.info("Bot iniciado.")
     log.info("IDs autorizados configurados: %d", len(ALLOWED_USER_IDS))
-    log.info("Controlador configurado en %s", BROWSER_CONTROL_URL)
 
 
 def main():
