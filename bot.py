@@ -18,10 +18,15 @@ logging.basicConfig(
 log = logging.getLogger("pi-monitor")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED_USER_ID = os.getenv(
+RAW_ALLOWED_USER_IDS = os.getenv(
     "TELEGRAM_ALLOWED_USER_IDS",
     os.getenv("TELEGRAM_ALLOWED_USER_ID", ""),
 ).strip()
+ALLOWED_USER_IDS = {
+    value.strip()
+    for value in RAW_ALLOWED_USER_IDS.split(",")
+    if value.strip()
+}
 LINK_1 = os.getenv("DIRECTO_1_URL", "").strip()
 LINK_2 = os.getenv("DIRECTO_2_URL", "").strip()
 CHECK_TIMEOUT = float(os.getenv("URL_CHECK_TIMEOUT", "8"))
@@ -31,13 +36,13 @@ monitor_tasks = set()
 
 def authorized(update: Update) -> bool:
     user = update.effective_user
-    return bool(user and ALLOWED_USER_ID and str(user.id) == ALLOWED_USER_ID)
+    return bool(user and str(user.id) in ALLOWED_USER_IDS)
 
 
 async def reject(update: Update):
     if update.effective_message:
         await update.effective_message.reply_text(
-            "No autorizado. Configura tu TELEGRAM_ALLOWED_USER_ID en el archivo .env."
+            "No autorizado. Configura TELEGRAM_ALLOWED_USER_IDS con uno o varios IDs numéricos de Telegram."
         )
 
 
@@ -176,13 +181,13 @@ async def close_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
-    log.info("Bot started. Authorized Telegram user ID: %s", ALLOWED_USER_ID or "(missing)")
+    log.info("Bot started. Authorized Telegram user IDs: %s", ", ".join(sorted(ALLOWED_USER_IDS)) if ALLOWED_USER_IDS else "(missing)")
 
 
 def main():
     if not TOKEN:
         raise SystemExit("Falta TELEGRAM_BOT_TOKEN en .env")
-    if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
+    if not ALLOWED_USER_IDS:
         raise SystemExit("Configura TELEGRAM_ALLOWED_USER_ID o TELEGRAM_ALLOWED_USER_IDS con tu ID numérico de Telegram.")
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
