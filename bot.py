@@ -1,16 +1,22 @@
+
 import os
 import time
 import asyncio
 import logging
-from datetime import datetime, timezone
+import json
+import urllib.request
+import urllib.error
 
-import aiohttp
+from datetime import datetime
+from urllib.parse import urlparse
+
 import psutil
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 load_dotenv()
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     level=logging.INFO,
@@ -18,20 +24,32 @@ logging.basicConfig(
 log = logging.getLogger("pi-monitor")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-RAW_ALLOWED_USER_IDS = os.getenv(
+
+# Admite uno o varios IDs separados por comas.
+_raw_ids = os.getenv(
     "TELEGRAM_ALLOWED_USER_IDS",
     os.getenv("TELEGRAM_ALLOWED_USER_ID", ""),
-).strip()
+)
 ALLOWED_USER_IDS = {
-    value.strip()
-    for value in RAW_ALLOWED_USER_IDS.split(",")
-    if value.strip()
+    item.strip()
+    for item in _raw_ids.split(",")
+    if item.strip().isdigit()
 }
+
 LINK_1 = os.getenv("DIRECTO_1_URL", "").strip()
 LINK_2 = os.getenv("DIRECTO_2_URL", "").strip()
 CHECK_TIMEOUT = float(os.getenv("URL_CHECK_TIMEOUT", "8"))
+
+BROWSER_CONTROL_URL = os.getenv(
+    "BROWSER_CONTROL_URL",
+    "http://host.docker.internal:8765/action",
+).strip()
+
+BROWSER_CONTROL_TOKEN = os.getenv(
+    "BROWSER_CONTROL_TOKEN", ""
+).strip()
+
 started_at = time.monotonic()
-monitor_tasks = set()
 
 
 def authorized(update: Update) -> bool:
@@ -39,25 +57,21 @@ def authorized(update: Update) -> bool:
     return bool(user and str(user.id) in ALLOWED_USER_IDS)
 
 
-async def reject(update: Update):
-    if update.effective_message:
-        await update.effective_message.reply_text(
-            "No autorizado. Configura TELEGRAM_ALLOWED_USER_IDS con uno o varios IDs numéricos de Telegram."
-        )
-
-
 async def guard(update: Update) -> bool:
-    if not authorized(update):
-        await reject(update)
-        return False
-    return True
+    if authorized(update):
+        return True
+
+    if update.effective_message:
+        await update.effective_message.reply_text("No autorizado.")
+    return False
 
 
 def format_uptime(seconds: float) -> str:
     seconds = int(seconds)
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, _ = divmod(rem, 60)
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
     parts = []
     if days:
         parts.append(f"{days}d")
@@ -67,33 +81,104 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
-async def check_url(url: str) -> str:
-    if not url:
-        return "No configurado"
-    timeout = aiohttp.ClientTimeout(total=CHECK_TIMEOUT)
-    headers = {"User-Agent": "PiTelegramMonitor/1.0"}
+def send_browser_action(action: str) -> dict:
+    if not BROWSER_CONTROL_TOKEN:
+        raise RuntimeError(
+            "Falta configurar BROWSER_CONTROL_TOKEN en Portainer."
+        )
+
+    payload = json.dumps({"action": action}).encode("utf-8")
+    request = urllib.request.Request(
+        BROWSER_CONTROL_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {BROWSER_CONTROL_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
     try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, allow_redirects=True) as response:
-                return f"HTTP {response.status} — enlace accesible"
-    except asyncio.TimeoutError:
-        return "Tiempo de espera agotado"
-    except aiohttp.ClientError as exc:
-        return f"No se pudo comprobar ({type(exc).__name__})"
+        with urllib.request.urlopen(request, timeout=25) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Controlador HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"No se puede conectar con Chromium en {BROWSER_CONTROL_URL}: {exc}"
+        ) from exc
+
+    if not result.get("ok", False):
+        raise RuntimeError(result.get("error", "Error del controlador"))
+
+    return result
+
+
+async def browser_action(action: str) -> dict:
+    return await asyncio.to_thread(send_browser_action, action)
+
+
+async def run_browser_command(
+    update: Update,
+    action: str,
+    success_message: str,
+):
+    if not await guard(update):
+        return
+
+    message = update.effective_message
+
+    try:
+        # Evita intentar abrir canales que no estén configurados.
+        if action == "vainilla" and not LINK_1:
+            await message.reply_text("Falta configurar DIRECTO_1_URL.")
+            return
+
+        if action == "yisus" and not LINK_2:
+            await message.reply_text("Falta configurar DIRECTO_2_URL.")
+            return
+
+        if action == "ambos" and (not LINK_1 or not LINK_2):
+            await message.reply_text(
+                "Configura DIRECTO_1_URL y DIRECTO_2_URL en Portainer."
+            )
+            return
+
+        result = await browser_action(action)
+
+        if action == "recargar":
+            count = result.get("reloaded", 0)
+            await message.reply_text(
+                f"Pestañas del bot recargadas: {count}."
+                if count
+                else "No hay pestañas abiertas del bot para recargar."
+            )
+        elif action == "cerrar_todo":
+            await message.reply_text(
+                f"Pestañas del bot cerradas: {result.get('closed', 0)}."
+            )
+        else:
+            await message.reply_text(success_message)
+
+    except Exception as exc:
+        log.exception("Error ejecutando la acción %s", action)
+        await message.reply_text(f"No se pudo ejecutar el comando:\n{exc}")
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
+
     await update.effective_message.reply_text(
-        "Bot de supervisión de la Raspberry Pi listo.\n\n"
-        "/estado — estado de la Pi y enlaces\n"
-        "/vainilla — recibir el enlace 1\n"
-        "/yisus — recibir el enlace 2\n"
-        "/ambos — recibir ambos enlaces\n"
-        "/recargar — volver a comprobar los enlaces\n"
-        "/cerrar_todo — cancelar tareas de supervisión activas\n"
-        "/ayuda — mostrar comandos\n\n"
+        "Control de Chromium en Raspberry Pi\n\n"
+        "/estado — estado de la Raspberry Pi y del bot\n"
+        "/vainilla — abrir el primer canal\n"
+        "/yisus — abrir el segundo canal\n"
+        "/ambos — abrir ambos canales\n"
+        "/recargar — recargar solo las pestañas abiertas por el bot\n"
+        "/cerrar_todo — cerrar solo las pestañas abiertas por el bot\n"
+        "/ayuda — mostrar esta ayuda"
     )
 
 
@@ -104,90 +189,77 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
-    mem = psutil.virtual_memory()
+
+    memory = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     cpu = psutil.cpu_percent(interval=0.4)
     uptime = format_uptime(time.monotonic() - started_at)
     now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    text = (
-        f"Estado del bot / Raspberry Pi\n"
+
+    await update.effective_message.reply_text(
+        "Estado de la Raspberry Pi\n"
         f"Hora local: {now}\n"
         f"Bot activo: {uptime}\n"
         f"CPU: {cpu:.0f}%\n"
-        f"RAM: {mem.percent:.0f}% usada ({mem.used / 1024**3:.1f}/{mem.total / 1024**3:.1f} GiB)\n"
-        f"Disco raíz: {disk.percent:.0f}% usado ({disk.free / 1024**3:.1f} GiB libres)\n\n"
-        f"Enlace 1: {'configurado' if LINK_1 else 'no configurado'}\n"
-        f"Enlace 2: {'configurado' if LINK_2 else 'no configurado'}"
+        f"RAM: {memory.percent:.0f}% usada "
+        f"({memory.used / 1024**3:.1f}/"
+        f"{memory.total / 1024**3:.1f} GiB)\n"
+        f"Disco raíz: {disk.percent:.0f}% usado "
+        f"({disk.free / 1024**3:.1f} GiB libres)\n\n"
+        f"Canal 1: {'configurado' if LINK_1 else 'sin configurar'}\n"
+        f"Canal 2: {'configurado' if LINK_2 else 'sin configurar'}\n"
+        f"Controlador: {BROWSER_CONTROL_URL}"
     )
-    await update.effective_message.reply_text(text)
-
-
-async def send_link(update: Update, url: str, label: str):
-    if not await guard(update):
-        return
-    if not url:
-        await update.effective_message.reply_text(
-            f"{label}: falta configurar la URL en el archivo .env."
-        )
-        return
-    await update.effective_message.reply_text(f"{label}\n{url}")
 
 
 async def link1_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_link(update, LINK_1, "Enlace 1")
+    await run_browser_command(update, "vainilla", "Canal Vainilla solicitado.")
 
 
 async def link2_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_link(update, LINK_2, "Enlace 2")
+    await run_browser_command(update, "yisus", "Canal Yisus solicitado.")
 
 
 async def both_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update):
-        return
-    lines = []
-    lines.append(f"Enlace 1: {LINK_1 or 'no configurado'}")
-    lines.append(f"Enlace 2: {LINK_2 or 'no configurado'}")
-    await update.effective_message.reply_text("\n\n".join(lines), disable_web_page_preview=True)
+    await run_browser_command(update, "ambos", "Ambos canales solicitados.")
 
 
 async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update):
-        return
-    await update.effective_message.reply_text("Comprobando accesibilidad de los enlaces…")
-    one, two = await asyncio.gather(check_url(LINK_1), check_url(LINK_2))
-    await update.effective_message.reply_text(
-        f"Comprobación de enlaces (no confirma si hay un directo activo):\n"
-        f"1. {one}\n"
-        f"2. {two}"
-    )
+    await run_browser_command(update, "recargar", "Recarga solicitada.")
 
 
 async def close_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update):
-        return
-    current = asyncio.current_task()
-    cancelled = 0
-    for task in list(monitor_tasks):
-        if task is not current and not task.done():
-            task.cancel()
-            cancelled += 1
-    monitor_tasks.clear()
-    await update.effective_message.reply_text(
-        f"Supervisión detenida. Tareas canceladas: {cancelled}.\n"
-        "No se cerraron pestañas del navegador ni procesos del sistema."
+    await run_browser_command(
+        update, "cerrar_todo", "Cierre de pestañas solicitado."
     )
 
 
 async def post_init(application: Application):
-    log.info("Bot started. Authorized Telegram user IDs: %s", ", ".join(sorted(ALLOWED_USER_IDS)) if ALLOWED_USER_IDS else "(missing)")
+    log.info("Bot iniciado.")
+    log.info("IDs autorizados configurados: %d", len(ALLOWED_USER_IDS))
+    log.info("Controlador configurado en %s", BROWSER_CONTROL_URL)
 
 
 def main():
     if not TOKEN:
-        raise SystemExit("Falta TELEGRAM_BOT_TOKEN en .env")
+        raise SystemExit("Falta TELEGRAM_BOT_TOKEN.")
+
     if not ALLOWED_USER_IDS:
-        raise SystemExit("Configura TELEGRAM_ALLOWED_USER_ID o TELEGRAM_ALLOWED_USER_IDS con tu ID numérico de Telegram.")
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+        raise SystemExit(
+            "Configura TELEGRAM_ALLOWED_USER_IDS con uno o varios "
+            "IDs numéricos separados por comas."
+        )
+
+    if not LINK_1 or not LINK_2:
+        log.warning("Falta configurar una o ambas URLs de los canales.")
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ayuda", help_cmd))
     app.add_handler(CommandHandler("estado", status_cmd))
@@ -196,7 +268,8 @@ def main():
     app.add_handler(CommandHandler("ambos", both_cmd))
     app.add_handler(CommandHandler("recargar", reload_cmd))
     app.add_handler(CommandHandler("cerrar_todo", close_all_cmd))
-    log.info("Polling started")
+
+    log.info("Iniciando polling de Telegram.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
