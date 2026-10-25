@@ -74,7 +74,6 @@ async def check_url(url: str) -> str:
     headers = {"User-Agent": "PiTelegramMonitor/1.0"}
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            # GET with a small response read is more compatible than HEAD for many sites.
             async with session.get(url, allow_redirects=True) as response:
                 return f"HTTP {response.status} — enlace accesible"
     except asyncio.TimeoutError:
@@ -95,7 +94,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/recargar — volver a comprobar los enlaces\n"
         "/cerrar_todo — cancelar tareas de supervisión activas\n"
         "/ayuda — mostrar comandos\n\n"
-        "Este bot comprueba enlaces y recursos; no abre ni recarga reproductores."
     )
 
 
