@@ -237,21 +237,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("")
         lines.append(f"Pestañas abiertas en Chromium: {len(tabs)}")
 
-        for tab in tabs:
-            title = tab.get("title") or "(sin título)"
-            url = tab.get("url", "")
-            channel = tab.get("channel", "")
-            owned = tab.get("owned", False)
-
-            if owned:
-                label = {
-                    "vainilla": "Vainilla",
-                    "yisus": "Yisus",
-                }.get(channel, "Bot")
-                lines.append(f"• [{label}] {title}\n  {url}")
-            else:
-                lines.append(f"• [Personal] {title}\n  {url}")
-
     except Exception as exc:
         log.warning("No se pudo consultar las pestañas: %s", exc)
         lines.append("")
