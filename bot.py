@@ -18,7 +18,10 @@ logging.basicConfig(
 log = logging.getLogger("pi-monitor")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").strip()
+ALLOWED_USER_ID = os.getenv(
+    "TELEGRAM_ALLOWED_USER_IDS",
+    os.getenv("TELEGRAM_ALLOWED_USER_ID", ""),
+).strip()
 LINK_1 = os.getenv("DIRECTO_1_URL", "").strip()
 LINK_2 = os.getenv("DIRECTO_2_URL", "").strip()
 CHECK_TIMEOUT = float(os.getenv("URL_CHECK_TIMEOUT", "8"))
@@ -179,8 +182,8 @@ async def post_init(application: Application):
 def main():
     if not TOKEN:
         raise SystemExit("Falta TELEGRAM_BOT_TOKEN en .env")
-    if not ALLOWED_USER_ID.isdigit():
-        raise SystemExit("Configura TELEGRAM_ALLOWED_USER_ID con tu ID numérico de Telegram.")
+    if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
+        raise SystemExit("Configura TELEGRAM_ALLOWED_USER_ID o TELEGRAM_ALLOWED_USER_IDS con tu ID numérico de Telegram.")
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ayuda", help_cmd))
