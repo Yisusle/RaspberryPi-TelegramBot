@@ -18,7 +18,7 @@ logging.basicConfig(
 log = logging.getLogger("pi-monitor")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
+ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").strip()
 LINK_1 = os.getenv("DIRECTO_1_URL", "").strip()
 LINK_2 = os.getenv("DIRECTO_2_URL", "").strip()
 CHECK_TIMEOUT = float(os.getenv("URL_CHECK_TIMEOUT", "8"))
